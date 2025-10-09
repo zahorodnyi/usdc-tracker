@@ -23,6 +23,19 @@ pub async fn take_transactions() -> anyhow::Result<()> {
 
     let transfer_topic = H256::from_slice(&keccak256("Transfer(address,address,uint256)"));
 
+    process_historical_transactions(&provider_http, usdc_address, start_block, transfer_topic).await?;
+
+    process_live_transactions(&provider_http, provider_ws, usdc_address, transfer_topic).await?;
+
+    Ok(())
+}
+
+async fn process_historical_transactions(
+    provider_http: &Provider<Http>,
+    usdc_address: Address,
+    start_block: u64,
+    transfer_topic: H256,
+) -> anyhow::Result<()> {
     let latest_block = provider_http.get_block_number().await?.as_u64();
 
     println!("🔍 Зчитуємо USDC Transfer з блоків {start_block}..{latest_block}");
@@ -88,6 +101,15 @@ pub async fn take_transactions() -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+async fn process_live_transactions(
+    provider_http: &Provider<Http>,
+    provider_ws: Arc<Provider<Ws>>,
+    usdc_address: Address,
+    transfer_topic: H256,
+) -> anyhow::Result<()> {
     println!("🚀 Підключення до WebSocket для нових подій...");
 
     let filter_live = Filter::new()

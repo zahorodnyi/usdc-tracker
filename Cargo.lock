@@ -3683,7 +3683,6 @@ dependencies = [
  "dotenv",
  "ethers",
  "rust_decimal",
- "serde_json",
  "tokio",
 ]
 
