@@ -7,6 +7,7 @@ use rust_decimal::Decimal;
 use ethers::types::U256;
 use std::str::FromStr;
 use tokio::time::{sleep, Duration};
+use chrono::{DateTime, Utc};
 
 pub async fn take_transactions() -> anyhow::Result<()> {
     dotenv().ok();
@@ -45,7 +46,13 @@ pub async fn take_transactions() -> anyhow::Result<()> {
                 println!("📦 Отримано {} подій із блоків {current}..{end}", logs.len());
                 for log in logs {
                     if let Some((from, to, amount)) = decode_transfer(&log) {
-                        println!("📜 {from:?} → {to:?} : {amount} USDC");
+                        let time = get_block_time(&provider_http, log.block_number).await;
+                        if let Some(datetime) = time {
+                            println!("📜 {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
+                        }
+                        else {
+                            println!("📜 {from:?} → {to:?} : {amount} USDC");
+                        }
                     }
                 }
 
@@ -83,7 +90,13 @@ pub async fn take_transactions() -> anyhow::Result<()> {
 
     while let Some(log) = sub.next().await {
         if let Some((from, to, amount)) = decode_transfer(&log) {
-            println!("⚡ Live: {from:?} → {to:?} : {amount} USDC");
+            let time = get_block_time(&provider_http, log.block_number).await;
+            if let Some(datetime) = time {
+                println!("⚡ Live: {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
+            }
+            else {
+                println!("⚡ Live: {from:?} → {to:?} : {amount} USDC");
+            }
         }
     }
 
@@ -105,4 +118,14 @@ fn decode_transfer(log: &Log) -> Option<(Address, Address, Decimal)> {
     let value = raw_dec * divisor;
 
     Some((from, to, value))
+}
+
+async fn get_block_time(provider: &Provider<Http>, block_number: Option<U64>) -> Option<DateTime<Utc>> {
+    if let Some(block_number) = block_number {
+        if let Ok(Some(block)) = provider.get_block(block_number).await {
+            let ts = block.timestamp.as_u64() as i64;
+            return DateTime::from_timestamp(ts, 0);
+        }
+    }
+    None
 }
