@@ -1,0 +1,15 @@
+
+
+services:
+  db:
+    image: postgres:16
+    container_name: postgres
+    restart: always
+    environment:
+      POSTGRES_USER: rustuser
+      POSTGRES_PASSWORD: rustpass
+      POSTGRES_DB: rustdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
