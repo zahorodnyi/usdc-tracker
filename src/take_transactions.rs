@@ -44,10 +44,18 @@ pub async fn take_transactions() -> anyhow::Result<()> {
         match response {
             Ok(logs) => {
                 println!("📦 Отримано {} подій із блоків {current}..{end}", logs.len());
+
+                let mut last_block: Option<U64> = None;
+                let mut last_block_time: Option<DateTime<Utc>> = None;
+                
                 for log in logs {
                     if let Some((from, to, amount)) = decode_transfer(&log) {
-                        let time = get_block_time(&provider_http, log.block_number).await;
-                        if let Some(datetime) = time {
+                        if log.block_number != last_block {
+                            last_block = log.block_number;
+                            last_block_time = get_block_time(&provider_http, log.block_number).await;
+                        }
+                        
+                        if let Some(datetime) = last_block_time {
                             println!("📜 {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
                         }
                         else {
@@ -88,10 +96,17 @@ pub async fn take_transactions() -> anyhow::Result<()> {
 
     let mut sub = provider_ws.subscribe_logs(&filter_live).await?;
 
+    let mut last_block: Option<U64> = None;
+    let mut last_block_time: Option<DateTime<Utc>> = None;
+
     while let Some(log) = sub.next().await {
         if let Some((from, to, amount)) = decode_transfer(&log) {
-            let time = get_block_time(&provider_http, log.block_number).await;
-            if let Some(datetime) = time {
+            if log.block_number != last_block {
+                last_block = log.block_number;
+                last_block_time = get_block_time(&provider_http, log.block_number).await;
+            }
+            
+            if let Some(datetime) = last_block_time {
                 println!("⚡ Live: {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
             }
             else {
