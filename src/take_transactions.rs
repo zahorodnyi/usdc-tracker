@@ -8,6 +8,8 @@ use ethers::types::U256;
 use std::str::FromStr;
 use tokio::time::{sleep, Duration};
 use chrono::{DateTime, Utc};
+use crate::db::{init_pool, insert_transfer_if_not_exists, update_sync_state, get_last_block_or_default};
+
 
 pub async fn take_transactions() -> anyhow::Result<()> {
     dotenv().ok();
@@ -15,7 +17,10 @@ pub async fn take_transactions() -> anyhow::Result<()> {
     let rpc_http = env::var("RPC_HTTP")?;
     let rpc_ws = env::var("RPC_WS")?;
     let usdc_address: Address = env::var("USDC_CONTRACT")?.parse()?;
-    let start_block: u64 = env::var("START_BLOCK")?.parse()?;
+    //let start_block: u64 = env::var("START_BLOCK")?.parse()?;
+    let pool = init_pool().await?;
+    let start_block = get_last_block_or_default(&pool).await?;
+
 
     let provider_http = Provider::<Http>::try_from(rpc_http.clone())?;
     let provider_ws = Provider::<Ws>::connect(rpc_ws.clone()).await?;
@@ -23,9 +28,9 @@ pub async fn take_transactions() -> anyhow::Result<()> {
 
     let transfer_topic = H256::from_slice(&keccak256("Transfer(address,address,uint256)"));
 
-    process_historical_transactions(&provider_http, usdc_address, start_block, transfer_topic).await?;
+    process_historical_transactions(&provider_http, usdc_address, start_block, transfer_topic, &pool).await?;
 
-    process_live_transactions(&provider_http, provider_ws, usdc_address, transfer_topic).await?;
+    process_live_transactions(&provider_http, provider_ws, usdc_address, transfer_topic, &pool).await?;
 
     Ok(())
 }
@@ -35,6 +40,7 @@ async fn process_historical_transactions(
     usdc_address: Address,
     start_block: u64,
     transfer_topic: H256,
+    pool: &sqlx::PgPool,
 ) -> anyhow::Result<()> {
     let latest_block = provider_http.get_block_number().await?.as_u64();
 
@@ -69,14 +75,27 @@ async fn process_historical_transactions(
                         }
                         
                         if let Some(datetime) = last_block_time {
-                            println!("📜 {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
+                            //println!("📜 {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
+
+                            if let Some(tx_hash) = log.transaction_hash {
+                                insert_transfer_if_not_exists(
+                                    pool,
+                                    &format!("{:?}", tx_hash),
+                                    log.block_number.unwrap().as_u64(),
+                                    &format!("{:?}", from),
+                                    &format!("{:?}", to),
+                                    &amount,
+                                    &datetime,
+                                ).await?;
+                            }
                         }
                         else {
-                            println!("📜 {from:?} → {to:?} : {amount} USDC");
+                            //println!("📜 {from:?} → {to:?} : {amount} USDC");
                         }
                     }
                 }
 
+                update_sync_state(pool, end).await?;
                 current = end + 1;
                 sleep(Duration::from_millis(200)).await;
             }
@@ -109,6 +128,7 @@ async fn process_live_transactions(
     provider_ws: Arc<Provider<Ws>>,
     usdc_address: Address,
     transfer_topic: H256,
+    pool: &sqlx::PgPool,
 ) -> anyhow::Result<()> {
     println!("🚀 Підключення до WebSocket для нових подій...");
 
@@ -129,10 +149,22 @@ async fn process_live_transactions(
             }
             
             if let Some(datetime) = last_block_time {
-                println!("⚡ Live: {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
+                //println!("⚡ Live: {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
+
+                if let Some(tx_hash) = log.transaction_hash {
+                    insert_transfer_if_not_exists(
+                        pool,
+                        &format!("{:?}", tx_hash),
+                        log.block_number.unwrap().as_u64(),
+                        &format!("{:?}", from),
+                        &format!("{:?}", to),
+                        &amount,
+                        &datetime,
+                    ).await?;
+                }
             }
             else {
-                println!("⚡ Live: {from:?} → {to:?} : {amount} USDC");
+                //println!("⚡ Live: {from:?} → {to:?} : {amount} USDC");
             }
         }
     }
