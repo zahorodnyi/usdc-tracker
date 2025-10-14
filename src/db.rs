@@ -1,7 +1,7 @@
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use anyhow::Result;
+use sqlx::{postgres::PgPoolOptions, PgPool};
 
 pub async fn init_pool() -> Result<PgPool> {
     let db_url = std::env::var("DATABASE_URL")?;
@@ -15,6 +15,7 @@ pub async fn init_pool() -> Result<PgPool> {
 pub async fn insert_transfer_if_not_exists(
     pool: &PgPool,
     tx_hash: &str,
+    log_index: u64,
     block_number: u64,
     from: &str,
     to: &str,
@@ -23,11 +24,12 @@ pub async fn insert_transfer_if_not_exists(
 ) -> Result<()> {
     sqlx::query!(
         r#"
-        INSERT INTO usdc_transfers (tx_hash, block_number, from_address, to_address, amount, block_time)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        ON CONFLICT (tx_hash) DO NOTHING
+        INSERT INTO usdc_transfers (tx_hash, log_index, block_number, from_address, to_address, amount, block_time)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (tx_hash, log_index) DO NOTHING
         "#,
         tx_hash,
+        log_index as i64,
         block_number as i64,
         from,
         to,
