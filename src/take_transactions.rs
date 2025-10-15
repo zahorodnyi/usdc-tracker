@@ -16,12 +16,41 @@ const TRANSFER_EVENT_SIG: &str = "Transfer(address,address,uint256)";
 const LOGS_BATCH_SIZE: u64 = 100;
 const HISTORICAL_SLEEP_MS: u64 = 200;
 const RATE_LIMIT_WAIT_SECS: u64 = 10;
+const RETRY_TIMES: u64 = 3;
+
+enum RpcErrorKind {
+    RateLimited,
+    TooManyLogs,
+    Temporary,
+    Fatal,
+}
+
+struct BatchSizer {
+    original: u64,
+    current: u64,
+}
+
+impl BatchSizer {
+    fn new(original: u64) -> Self {
+        Self { original, current: original }
+    }
+
+    fn halve(&mut self) {
+        self.current = std::cmp::max(1, self.current / 2);
+    }
+
+    fn reset(&mut self) {
+        self.current = self.original;
+    }
+
+    fn is_min(&self) -> bool {
+        self.current <= 1
+    }
+}
+
 
 pub async fn take_transactions() -> anyhow::Result<()> {
     dotenv().ok();
-    //dotenv::from_path(concat!(env!("CARGO_MANIFEST_DIR"), "/.env")).ok();
-
-
 
     let rpc_http = env::var("RPC_HTTP")?;
     let rpc_ws = env::var("RPC_WS")?;
@@ -36,12 +65,13 @@ pub async fn take_transactions() -> anyhow::Result<()> {
 
     let transfer_topic = H256::from_slice(&keccak256(TRANSFER_EVENT_SIG));
 
-    let latest_block = process_historical_transactions(&provider_http, usdc_address, start_block, transfer_topic, &pool).await?;
+    let _latest_block = process_historical_transactions(&provider_http, usdc_address, start_block, transfer_topic, &pool).await?;
 
     process_live_transactions(&provider_http, provider_ws, usdc_address, transfer_topic, &pool).await?;
 
     Ok(())
 }
+
 
 async fn process_historical_transactions(
     provider_http: &Provider<Http>,
@@ -55,81 +85,82 @@ async fn process_historical_transactions(
     //println!("🔍 Зчитуємо USDC Transfer з блоків {start_block}..{latest_block}");
 
     let mut current = start_block;
+    let mut batch = BatchSizer::new(LOGS_BATCH_SIZE);
 
     while current <= latest_block {
-        let end = std::cmp::min(current + LOGS_BATCH_SIZE, latest_block);
 
-        let filter = Filter::new()
-            .address(usdc_address)
-            .from_block(current)
-            .to_block(end)
-            .topic0(transfer_topic);
+        let mut attempt = 0;
+        let mut success = false;
 
-        let response = provider_http.get_logs(&filter).await;
+        while attempt < RETRY_TIMES {
+            let end = std::cmp::min(current + batch.current - 1, latest_block);
+            let filter = Filter::new()
+                .address(usdc_address)
+                .from_block(current)
+                .to_block(end)
+                .topic0(transfer_topic);
 
-        match response {
-            Ok(logs) => {
-                //println!("📦 Отримано {} подій із блоків {current}..{end}", logs.len());
+            let response = provider_http.get_logs(&filter).await;
 
-                let mut last_block: Option<U64> = None;
-                let mut last_block_time: Option<DateTime<Utc>> = None;
+            match response {
+                Ok(logs) => {
+                    //println!("📦 Отримано {} подій із блоків {current}..{end}", logs.len());
+                    let mut last_block: Option<U64> = None;
+                    let mut last_block_time: Option<DateTime<Utc>> = None;
 
-                for log in logs {
-                    if let Some((from, to, amount)) = decode_transfer(&log) {
-                        if log.block_number != last_block {
-                            last_block = log.block_number;
-                            last_block_time = get_block_time(&provider_http, log.block_number).await;
-                        }
+                    for log in logs {
+                        if let Some((from, to, amount)) = decode_transfer(&log) {
+                            if log.block_number != last_block {
+                                last_block = log.block_number;
+                                last_block_time = get_block_time(&provider_http, log.block_number).await;
+                            }
 
-                        if let Some(datetime) = last_block_time {
-                            //println!("📜 {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
-
-                            if let (Some(tx_hash), Some(li)) = (log.transaction_hash, log.log_index) {
-                                insert_transfer_if_not_exists(
-                                    pool,
-                                    &format!("{:?}", tx_hash),
-                                    li.as_u64(),
-                                    log.block_number.unwrap().as_u64(),
-                                    &format!("{:?}", from),
-                                    &format!("{:?}", to),
-                                    &amount,
-                                    &datetime,
-                                ).await?;
+                            if let Some(datetime) = last_block_time {
+                                if let (Some(tx_hash), Some(li)) = (log.transaction_hash, log.log_index) {
+                                    //println!("📜 {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
+                                    insert_transfer_if_not_exists(
+                                        pool,
+                                        &format!("{:?}", tx_hash),
+                                        li.as_u64(),
+                                        log.block_number.unwrap().as_u64(),
+                                        &format!("{:?}", from),
+                                        &format!("{:?}", to),
+                                        &amount,
+                                        &datetime,
+                                    ).await?;
+                                }
                             }
                         }
-                        else {
-                            //println!("📜 {from:?} → {to:?} : {amount} USDC");
-                        }
+                    }
+
+                    update_sync_state(pool, end).await?;
+                    current = end + 1;
+                    batch.reset();
+                    sleep(Duration::from_millis(HISTORICAL_SLEEP_MS)).await;
+                    success = true;
+                    break;
+                }
+
+                Err(err) => {
+                    let msg = err.to_string();
+                    let kind = classify_rpc_error(&msg);
+                    if !handle_rpc_error(kind, &mut current, &mut batch, &mut attempt).await {
+                        break;
                     }
                 }
-
-                update_sync_state(pool, end).await?;
-                current = end + 1;
-                sleep(Duration::from_millis(HISTORICAL_SLEEP_MS)).await;
-            }
-
-            Err(err) => {
-                let msg = err.to_string();
-
-                if msg.contains("Too Many Requests") {
-                    //println!("⏳ Rate limit Infura — чекаємо 10 секунд...");
-                    sleep(Duration::from_secs(RATE_LIMIT_WAIT_SECS)).await;
-                    continue;
-                }
-
-                if msg.contains("query returned more than 10000 results") {
-                    //println!("⚠️ Забагато подій у блоках {current}..{end} — пропускаємо без затримки.");
-                    current = end + 1;
-                    continue;
-                }
-
-                //println!("⚠️ Помилка при читанні {current}..{end}: {msg}");
             }
         }
+
+        if !success {
+            current = current.saturating_add(1);
+            batch.reset();
+        }
+
     }
 
     Ok(latest_block)
 }
+
 
 async fn process_live_transactions(
     provider_http: &Provider<Http>,
@@ -155,13 +186,13 @@ async fn process_live_transactions(
 
     let can_update_clone = can_update_sync_state.clone();
 
-    let historical_handle = tokio::spawn(async move {
+    let _historical_handle = tokio::spawn(async move {
         if let Ok(last_stored_block) = get_last_block_or_default(&pool_clone).await {
             if let Ok(current_block) = provider_http_clone.get_block_number().await {
                 let current_block = current_block.as_u64();
                 if current_block > last_stored_block {
                     //println!("📜 Дочитуємо пропущені блоки: {}..{}", last_stored_block + 1, current_block);
-                    if let Err(e) = process_historical_transactions(
+                    if let Err(_e) = process_historical_transactions(
                         &provider_http_clone,
                         usdc_address_clone,
                         last_stored_block,
@@ -193,7 +224,7 @@ async fn process_live_transactions(
                 last_block = log.block_number;
                 last_block_time = get_block_time(&provider_http, log.block_number).await;
             }
-            if let (Some(block_number), Some(datetime)) = (log.block_number, last_block_time) {
+            if let (Some(_block_number), Some(datetime)) = (log.block_number, last_block_time) {
             //if let Some(datetime) = last_block_time {
                 //println!("⚡ Live: block #{block_number} | {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
                 if let (Some(tx_hash), Some(li)) = (log.transaction_hash, log.log_index) {
@@ -222,6 +253,7 @@ async fn process_live_transactions(
     Ok(())
 }
 
+
 fn decode_transfer(log: &Log) -> Option<(Address, Address, Decimal)> {
     if log.topics.len() != 3 {
         return None;
@@ -239,6 +271,7 @@ fn decode_transfer(log: &Log) -> Option<(Address, Address, Decimal)> {
     Some((from, to, value))
 }
 
+
 async fn get_block_time(provider: &Provider<Http>, block_number: Option<U64>) -> Option<DateTime<Utc>> {
     if let Some(block_number) = block_number {
         if let Ok(Some(block)) = provider.get_block(block_number).await {
@@ -247,4 +280,78 @@ async fn get_block_time(provider: &Provider<Http>, block_number: Option<U64>) ->
         }
     }
     None
+}
+
+
+fn classify_rpc_error(msg: &str) -> RpcErrorKind {
+    if msg.contains("Too Many Requests") {
+        RpcErrorKind::RateLimited
+    } else if msg.contains("query returned more than 10000 results") {
+        RpcErrorKind::TooManyLogs
+    } else if msg.contains("timeout") || msg.contains("Temporary failure") {
+        RpcErrorKind::Temporary
+    } else {
+        RpcErrorKind::Fatal
+    }
+}
+
+
+
+async fn handle_rpc_error(
+    kind: RpcErrorKind,
+    current: &mut u64,
+    batch: &mut BatchSizer,
+    attempt: &mut u64,
+) -> bool {
+    use RpcErrorKind::*;
+
+    static mut LAST_WAS_BATCH_REDUCTION: bool = false;
+
+    match kind {
+        RateLimited => {
+            unsafe {
+                if LAST_WAS_BATCH_REDUCTION {
+                    //println!("⚠️ Rate limited, but recently reduced batch — short wait...");
+                    sleep(Duration::from_secs(2)).await;
+                    LAST_WAS_BATCH_REDUCTION = false;
+                }
+                else {
+                    //println!("⚠️ Rate limited by RPC provider — waiting {RATE_LIMIT_WAIT_SECS}s...");
+                    sleep(Duration::from_secs(RATE_LIMIT_WAIT_SECS)).await;
+                }
+            }
+            *attempt += 1;
+            true
+        }
+
+        TooManyLogs => {
+            if !batch.is_min() {
+                batch.halve();
+                //println!("⚠️ Too many logs in batch — reducing batch size to {} and retrying...", batch.current);
+                unsafe { LAST_WAS_BATCH_REDUCTION = true; }
+                sleep(Duration::from_millis(300)).await;
+                true
+            } else {
+                //println!("⚠️ Even 1 block has >10k logs — skipping block #{current} and resetting batch");
+                *current += 1;
+                batch.reset();
+                unsafe { LAST_WAS_BATCH_REDUCTION = false; }
+                false
+            }
+        }
+
+        Temporary => {
+            //println!("⚠️ Temporary network error — retrying soon...");
+            sleep(Duration::from_millis(500)).await;
+            *attempt += 1;
+            unsafe { LAST_WAS_BATCH_REDUCTION = false; }
+            true
+        }
+
+        Fatal => {
+            //println!("❌ Fatal RPC error — skipping this range.");
+            unsafe { LAST_WAS_BATCH_REDUCTION = false; }
+            false
+        }
+    }
 }
