@@ -1,6 +1,5 @@
 use std::env;
 use std::str::FromStr;
-use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use dotenv::dotenv;
@@ -10,6 +9,8 @@ use ethers::utils::keccak256;
 use rust_decimal::Decimal;
 use tokio::time::{sleep, Duration};
 use crate::db::{init_pool, insert_transfer_if_not_exists, update_sync_state, get_last_block_or_default};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
 
 const TRANSFER_EVENT_SIG: &str = "Transfer(address,address,uint256)";
 const LOGS_BATCH_SIZE: u64 = 100;
@@ -51,7 +52,7 @@ async fn process_historical_transactions(
 ) -> anyhow::Result<u64> {
     let latest_block = provider_http.get_block_number().await?.as_u64();
 
-    println!("🔍 Зчитуємо USDC Transfer з блоків {start_block}..{latest_block}");
+    //println!("🔍 Зчитуємо USDC Transfer з блоків {start_block}..{latest_block}");
 
     let mut current = start_block;
 
@@ -68,18 +69,18 @@ async fn process_historical_transactions(
 
         match response {
             Ok(logs) => {
-                println!("📦 Отримано {} подій із блоків {current}..{end}", logs.len());
+                //println!("📦 Отримано {} подій із блоків {current}..{end}", logs.len());
 
                 let mut last_block: Option<U64> = None;
                 let mut last_block_time: Option<DateTime<Utc>> = None;
-                
+
                 for log in logs {
                     if let Some((from, to, amount)) = decode_transfer(&log) {
                         if log.block_number != last_block {
                             last_block = log.block_number;
                             last_block_time = get_block_time(&provider_http, log.block_number).await;
                         }
-                        
+
                         if let Some(datetime) = last_block_time {
                             //println!("📜 {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
 
@@ -111,18 +112,18 @@ async fn process_historical_transactions(
                 let msg = err.to_string();
 
                 if msg.contains("Too Many Requests") {
-                    println!("⏳ Rate limit Infura — чекаємо 10 секунд...");
+                    //println!("⏳ Rate limit Infura — чекаємо 10 секунд...");
                     sleep(Duration::from_secs(RATE_LIMIT_WAIT_SECS)).await;
                     continue;
                 }
 
                 if msg.contains("query returned more than 10000 results") {
-                    println!("⚠️ Забагато подій у блоках {current}..{end} — пропускаємо без затримки.");
+                    //println!("⚠️ Забагато подій у блоках {current}..{end} — пропускаємо без затримки.");
                     current = end + 1;
                     continue;
                 }
 
-                println!("⚠️ Помилка при читанні {current}..{end}: {msg}");
+                //println!("⚠️ Помилка при читанні {current}..{end}: {msg}");
             }
         }
     }
@@ -137,11 +138,13 @@ async fn process_live_transactions(
     transfer_topic: H256,
     pool: &sqlx::PgPool,
 ) -> anyhow::Result<()> {
-    println!("🚀 Підключення до WebSocket для нових подій...");
+    //println!("🚀 Підключення до WebSocket для нових подій...");
 
     let filter_live = Filter::new()
         .address(usdc_address)
         .topic0(transfer_topic);
+
+    let can_update_sync_state = Arc::new(AtomicBool::new(false));
 
     let mut sub = provider_ws.subscribe_logs(&filter_live).await?;
 
@@ -150,25 +153,31 @@ async fn process_live_transactions(
     let usdc_address_clone = usdc_address;
     let transfer_topic_clone = transfer_topic;
 
+    let can_update_clone = can_update_sync_state.clone();
+
     let historical_handle = tokio::spawn(async move {
         if let Ok(last_stored_block) = get_last_block_or_default(&pool_clone).await {
             if let Ok(current_block) = provider_http_clone.get_block_number().await {
                 let current_block = current_block.as_u64();
                 if current_block > last_stored_block {
-                    println!("📜 Дочитуємо пропущені блоки: {}..{}", last_stored_block + 1, current_block);
+                    //println!("📜 Дочитуємо пропущені блоки: {}..{}", last_stored_block + 1, current_block);
                     if let Err(e) = process_historical_transactions(
                         &provider_http_clone,
                         usdc_address_clone,
-                        last_stored_block + 1,
+                        last_stored_block,
                         transfer_topic_clone,
                         &pool_clone,
                     ).await {
-                        eprintln!("⚠️ Помилка при дочитуванні пропущених блоків: {e}");
-                    } else {
-                        println!("✅ Пропущені блоки заповнено");
+                        //eprintln!("⚠️ Помилка при дочитуванні пропущених блоків: {e}");
                     }
-                } else {
-                    println!("✅ Пропущених блоків немає");
+                    else {
+                        //println!("✅ Пропущені блоки заповнено");
+                        can_update_clone.store(true, Ordering::SeqCst);
+                    }
+                }
+                else {
+                    //println!("✅ Пропущених блоків немає");
+                    can_update_clone.store(false, Ordering::SeqCst);
                 }
             }
         }
@@ -177,7 +186,6 @@ async fn process_live_transactions(
 
     let mut last_block: Option<U64> = None;
     let mut last_block_time: Option<DateTime<Utc>> = None;
-    let mut can_update_sync_state = false;
 
     while let Some(log) = sub.next().await {
         if let Some((from, to, amount)) = decode_transfer(&log) {
@@ -187,7 +195,7 @@ async fn process_live_transactions(
             }
             if let (Some(block_number), Some(datetime)) = (log.block_number, last_block_time) {
             //if let Some(datetime) = last_block_time {
-                println!("⚡ Live: block #{block_number} | {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
+                //println!("⚡ Live: block #{block_number} | {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
                 if let (Some(tx_hash), Some(li)) = (log.transaction_hash, log.log_index) {
                     insert_transfer_if_not_exists(
                         pool,
@@ -200,7 +208,7 @@ async fn process_live_transactions(
                         &datetime,
                     ).await?;
 
-                    if can_update_sync_state {
+                    if can_update_sync_state.load(Ordering::SeqCst) {
                         update_sync_state(pool, log.block_number.unwrap().as_u64()).await?;
                     }
                 }

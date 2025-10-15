@@ -58,16 +58,29 @@ pub async fn update_sync_state(pool: &PgPool, last_block: u64) -> Result<()> {
 }
 
 pub async fn get_last_block_or_default(pool: &PgPool) -> Result<u64> {
+
+    let start_block_env: u64 = std::env::var("START_BLOCK")?.parse()?;
+
     let record = sqlx::query!(
         "SELECT last_block FROM sync_state WHERE id = 1"
     )
         .fetch_optional(pool)
         .await?;
 
+
     if let Some(row) = record {
-        Ok(row.last_block as u64)
-    } else {
-        let start_block: u64 = std::env::var("START_BLOCK")?.parse()?;
-        Ok(start_block)
+        let db_block: u64 = row.last_block as u64;
+
+        if start_block_env > db_block {
+            update_sync_state(pool, start_block_env).await?;
+            Ok(start_block_env)
+        }
+        else {
+            Ok(db_block)
+        }
+    }
+    else {
+        update_sync_state(pool, start_block_env).await?;
+        Ok(start_block_env)
     }
 }
