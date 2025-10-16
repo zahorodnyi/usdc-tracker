@@ -10,6 +10,7 @@ use rust_decimal::Decimal;
 use tokio::time::{sleep, Duration};
 use crate::db::{init_pool, insert_transfer_if_not_exists, update_sync_state, get_last_block_or_default};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use sqlx::PgPool;
 
 
 const TRANSFER_EVENT_SIG: &str = "Transfer(address,address,uint256)";
@@ -49,13 +50,12 @@ impl BatchSizer {
 }
 
 
-pub async fn take_transactions() -> anyhow::Result<()> {
+pub async fn take_transactions(pool: Arc<PgPool>) -> anyhow::Result<()> {
     dotenv().ok();
 
     let rpc_http = env::var("RPC_HTTP")?;
     let rpc_ws = env::var("RPC_WS")?;
     let usdc_address: Address = env::var("USDC_CONTRACT")?.parse()?;
-    let pool = init_pool().await?;
     let start_block = get_last_block_or_default(&pool).await?;
 
 
@@ -199,7 +199,7 @@ async fn process_live_transactions(
                         transfer_topic_clone,
                         &pool_clone,
                     ).await {
-                        //eprintln!("⚠️ Помилка при дочитуванні пропущених блоків: {e}");
+                        //eprintln!("⚠️ Помилка при дочитуванні пропущених блоків: {_e}");
                     }
                     else {
                         //println!("✅ Пропущені блоки заповнено");
@@ -226,7 +226,7 @@ async fn process_live_transactions(
             }
             if let (Some(_block_number), Some(datetime)) = (log.block_number, last_block_time) {
             //if let Some(datetime) = last_block_time {
-                //println!("⚡ Live: block #{block_number} | {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
+                //println!("⚡ Live: block #{_block_number} | {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
                 if let (Some(tx_hash), Some(li)) = (log.transaction_hash, log.log_index) {
                     insert_transfer_if_not_exists(
                         pool,
