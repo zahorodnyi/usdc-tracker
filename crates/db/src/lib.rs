@@ -1,13 +1,13 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use sqlx::{postgres::PgPoolOptions, Row};
+pub use sqlx::PgPool;
 
-pub async fn init_pool() -> Result<PgPool> {
-    let db_url = std::env::var("DATABASE_URL")?;
+pub async fn init_pool(database_url: &str) -> Result<PgPool> {
     let pool = PgPoolOptions::new()
         .max_connections(5)
-        .connect(&db_url)
+        .connect(database_url)
         .await?;
     Ok(pool)
 }
@@ -60,7 +60,10 @@ pub async fn update_sync_state(pool: &PgPool, last_block: u64) -> Result<()> {
 }
 
 pub async fn get_last_block_or_default(pool: &PgPool) -> Result<u64> {
-    let start_block_env: u64 = std::env::var("START_BLOCK")?.parse()?;
+    let start_block_env: u64 = std::env::var("START_BLOCK")
+        .unwrap_or_else(|_| "0".into())
+        .parse()
+        .unwrap_or(0);
 
     let row = sqlx::query("SELECT last_block FROM sync_state WHERE id = 1")
         .fetch_optional(pool)
@@ -73,10 +76,12 @@ pub async fn get_last_block_or_default(pool: &PgPool) -> Result<u64> {
         if start_block_env > db_block {
             update_sync_state(pool, start_block_env).await?;
             Ok(start_block_env)
-        } else {
+        }
+        else {
             Ok(db_block)
         }
-    } else {
+    }
+    else {
         update_sync_state(pool, start_block_env).await?;
         Ok(start_block_env)
     }

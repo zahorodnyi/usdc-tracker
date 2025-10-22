@@ -1,0 +1,17 @@
+[package]
+name = "tracker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+api = { path = "../../crates/api" }
+db = { path = "../../crates/db" }
+service = { path = "../../crates/service" }
+config = { path = "../../crates/config" }
+
+axum = "0.8.6"
+tokio = { version = "1.47.1", features = ["full"] }
+anyhow = "1.0.100"
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio-rustls", "macros", "chrono", "rust_decimal"] }
+tracing = "0.1.41"
+tracing-subscriber = "0.3.20"

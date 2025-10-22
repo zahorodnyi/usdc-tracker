@@ -1,7 +1,10 @@
-
 services:
   usdc-tracker:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_NAME: tracker
     container_name: usdc-tracker
     env_file:
       - .env
@@ -19,7 +22,7 @@ services:
     ports:
       - "80:80"
     volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - usdc-tracker
     networks:
@@ -37,7 +40,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - ./pgdata/init:/docker-entrypoint-initdb.d
       - db_data:/var/lib/postgresql/data
     networks:
       - usdcnet

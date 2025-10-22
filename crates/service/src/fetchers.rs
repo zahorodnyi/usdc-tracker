@@ -8,9 +8,8 @@ use ethers::types::U256;
 use ethers::utils::keccak256;
 use rust_decimal::Decimal;
 use tokio::time::{sleep, Duration};
-use crate::db::{init_pool, insert_transfer_if_not_exists, update_sync_state, get_last_block_or_default};
+use db::{insert_transfer_if_not_exists, update_sync_state, get_last_block_or_default, PgPool};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use sqlx::PgPool;
 
 
 const TRANSFER_EVENT_SIG: &str = "Transfer(address,address,uint256)";
@@ -50,7 +49,7 @@ impl BatchSizer {
 }
 
 
-pub async fn take_transactions(pool: Arc<PgPool>) -> anyhow::Result<()> {
+pub async fn take_and_push_transactions(pool: Arc<PgPool>) -> anyhow::Result<()> {
     dotenv().ok();
 
     let rpc_http = env::var("RPC_HTTP")?;
@@ -81,8 +80,7 @@ async fn process_historical_transactions(
     pool: &sqlx::PgPool,
 ) -> anyhow::Result<u64> {
     let latest_block = provider_http.get_block_number().await?.as_u64();
-
-    //println!("🔍 Зчитуємо USDC Transfer з блоків {start_block}..{latest_block}");
+    
 
     let mut current = start_block;
     let mut batch = BatchSizer::new(LOGS_BATCH_SIZE);
@@ -104,7 +102,6 @@ async fn process_historical_transactions(
 
             match response {
                 Ok(logs) => {
-                    //println!("📦 Отримано {} подій із блоків {current}..{end}", logs.len());
                     let mut last_block: Option<U64> = None;
                     let mut last_block_time: Option<DateTime<Utc>> = None;
 
@@ -117,7 +114,6 @@ async fn process_historical_transactions(
 
                             if let Some(datetime) = last_block_time {
                                 if let (Some(tx_hash), Some(li)) = (log.transaction_hash, log.log_index) {
-                                    //println!("📜 {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
                                     insert_transfer_if_not_exists(
                                         pool,
                                         &format!("{:?}", tx_hash),
@@ -169,7 +165,6 @@ async fn process_live_transactions(
     transfer_topic: H256,
     pool: &sqlx::PgPool,
 ) -> anyhow::Result<()> {
-    //println!("🚀 Підключення до WebSocket для нових подій...");
 
     let filter_live = Filter::new()
         .address(usdc_address)
@@ -191,7 +186,6 @@ async fn process_live_transactions(
             if let Ok(current_block) = provider_http_clone.get_block_number().await {
                 let current_block = current_block.as_u64();
                 if current_block > last_stored_block {
-                    //println!("📜 Дочитуємо пропущені блоки: {}..{}", last_stored_block + 1, current_block);
                     if let Err(_e) = process_historical_transactions(
                         &provider_http_clone,
                         usdc_address_clone,
@@ -199,15 +193,12 @@ async fn process_live_transactions(
                         transfer_topic_clone,
                         &pool_clone,
                     ).await {
-                        //eprintln!("⚠️ Помилка при дочитуванні пропущених блоків: {_e}");
                     }
                     else {
-                        //println!("✅ Пропущені блоки заповнено");
                         can_update_clone.store(true, Ordering::SeqCst);
                     }
                 }
                 else {
-                    //println!("✅ Пропущених блоків немає");
                     can_update_clone.store(false, Ordering::SeqCst);
                 }
             }
@@ -225,8 +216,6 @@ async fn process_live_transactions(
                 last_block_time = get_block_time(&provider_http, log.block_number).await;
             }
             if let (Some(_block_number), Some(datetime)) = (log.block_number, last_block_time) {
-            //if let Some(datetime) = last_block_time {
-                //println!("⚡ Live: block #{_block_number} | {from:?} → {to:?} : {amount} USDC 🕒 {datetime}");
                 if let (Some(tx_hash), Some(li)) = (log.transaction_hash, log.log_index) {
                     insert_transfer_if_not_exists(
                         pool,
@@ -243,9 +232,6 @@ async fn process_live_transactions(
                         update_sync_state(pool, log.block_number.unwrap().as_u64()).await?;
                     }
                 }
-            }
-            else {
-                //println!("⚡ Live: {from:?} → {to:?} : {amount} USDC");
             }
         }
     }
@@ -311,12 +297,10 @@ async fn handle_rpc_error(
         RateLimited => {
             unsafe {
                 if LAST_WAS_BATCH_REDUCTION {
-                    //println!("⚠️ Rate limited, but recently reduced batch — short wait...");
                     sleep(Duration::from_secs(2)).await;
                     LAST_WAS_BATCH_REDUCTION = false;
                 }
                 else {
-                    //println!("⚠️ Rate limited by RPC provider — waiting {RATE_LIMIT_WAIT_SECS}s...");
                     sleep(Duration::from_secs(RATE_LIMIT_WAIT_SECS)).await;
                 }
             }
@@ -327,12 +311,10 @@ async fn handle_rpc_error(
         TooManyLogs => {
             if !batch.is_min() {
                 batch.halve();
-                //println!("⚠️ Too many logs in batch — reducing batch size to {} and retrying...", batch.current);
                 unsafe { LAST_WAS_BATCH_REDUCTION = true; }
                 sleep(Duration::from_millis(300)).await;
                 true
             } else {
-                //println!("⚠️ Even 1 block has >10k logs — skipping block #{current} and resetting batch");
                 *current += 1;
                 batch.reset();
                 unsafe { LAST_WAS_BATCH_REDUCTION = false; }
@@ -341,7 +323,6 @@ async fn handle_rpc_error(
         }
 
         Temporary => {
-            //println!("⚠️ Temporary network error — retrying soon...");
             sleep(Duration::from_millis(500)).await;
             *attempt += 1;
             unsafe { LAST_WAS_BATCH_REDUCTION = false; }
@@ -349,7 +330,6 @@ async fn handle_rpc_error(
         }
 
         Fatal => {
-            //println!("❌ Fatal RPC error — skipping this range.");
             unsafe { LAST_WAS_BATCH_REDUCTION = false; }
             false
         }

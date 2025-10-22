@@ -1,27 +1,24 @@
-ARG RUST_VERSION=1.90.0
-ARG APP_NAME=usdc-tracker
-
-
-FROM rust:${RUST_VERSION}-alpine AS build
-ARG APP_NAME
+# --- build stage ---
+FROM rust:1.90.0-alpine AS build
 WORKDIR /app
-ENV RUST_LOG=info
 
+# встановлюємо інструменти для білду
 RUN apk add --no-cache clang lld musl-dev git
 
 
-RUN --mount=type=bind,source=src,target=src \
-    --mount=type=bind,source=Cargo.toml,target=Cargo.toml \
-    --mount=type=bind,source=Cargo.lock,target=Cargo.lock \
-    --mount=type=cache,target=/app/target/ \
-    --mount=type=cache,target=/usr/local/cargo/git/db \
-    --mount=type=cache,target=/usr/local/cargo/registry/ \
-cargo build --locked --release && \
-cp ./target/release/$APP_NAME /bin/server
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY apps ./apps
+
+
+RUN cargo build --locked --release --package tracker
+
+
+RUN cp target/release/tracker /bin/server
 
 
 FROM alpine:3.18 AS final
-
+RUN apk add --no-cache ca-certificates
 
 ARG UID=10001
 RUN adduser \
@@ -32,10 +29,10 @@ RUN adduser \
     --no-create-home \
     --uid "${UID}" \
     appuser
+
 USER appuser
+WORKDIR /app
 
 COPY --from=build /bin/server /bin/
-
 EXPOSE 8080
-
 CMD ["/bin/server"]
