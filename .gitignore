@@ -1,48 +1,17 @@
+debug/
 target/
-**/*.rs.bk
+
 Cargo.lock
 
-*.rlib
-*.rmeta
+**/*.rs.bk
 
-.env
-.env.*
-!.env.example
+*.pdb
 
-/db_data/
-*.pid
-*.tar
-docker-compose.override.yml
-
-*.sql~
-*.dump
-*.backup
-
-*.conf~
-logs/
-nginx/logs/
-access.log
-error.log
-
-.vscode/
-.idea/
-*.iml
-*.sublime-project
-*.sublime-workspace
-*.swp
-*.swo
-
-*.log
 /logs
-tmp/
-temp/
-.cache/
-.DS_Store
-Thumbs.db
+*.log
+.env
 
-/coverage/
-*.profraw
-*.profdata
+.idea/
+.vscode/
 
-/dist/
-node_modules/
+logs/*
