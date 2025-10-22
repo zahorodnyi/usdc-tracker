@@ -1,21 +1,19 @@
-# --- build stage ---
-FROM rust:1.90.0-alpine AS build
+ARG RUST_VERSION=1.90.0
+ARG APP_NAME=tracker
+
+FROM rust:${RUST_VERSION}-alpine AS build
+ARG APP_NAME
 WORKDIR /app
 
-# встановлюємо інструменти для білду
 RUN apk add --no-cache clang lld musl-dev git
-
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY apps ./apps
 
+RUN cargo build --locked --release --package ${APP_NAME}
 
-RUN cargo build --locked --release --package tracker
-
-
-RUN cp target/release/tracker /bin/server
-
+RUN cp target/release/${APP_NAME} /bin/server
 
 FROM alpine:3.18 AS final
 RUN apk add --no-cache ca-certificates
@@ -29,7 +27,6 @@ RUN adduser \
     --no-create-home \
     --uid "${UID}" \
     appuser
-
 USER appuser
 WORKDIR /app
 
