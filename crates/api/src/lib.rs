@@ -1,54 +1,63 @@
 use axum::{
-    routing::{get, post},
-    extract::State,
+    extract::{Path, Query, State},
+    routing::get,
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
-use db::{self, PgPool};
+use serde::Deserialize;
+use chrono::{DateTime, Utc};
 use std::sync::Arc;
-
-
-#[derive(Serialize)]
-struct HealthResponse {
-    status: &'static str,
-}
-
-#[derive(Serialize)]
-struct LastBlockResponse {
-    last_block: u64,
-}
+use db::{self, PgPool, UsdcTransfer};
 
 #[derive(Deserialize)]
-struct UpdateSyncRequest {
-    last_block: u64,
+struct TransferFilter {
+    from: Option<String>,
+    to: Option<String>,
+    created_before: Option<DateTime<Utc>>,
+    created_after: Option<DateTime<Utc>>,
+    page: Option<u32>,
+    limit: Option<u32>,
 }
-
 
 pub fn create_router(pool: Arc<PgPool>) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/last_block", get(get_last_block))
-        .route("/update_sync", post(update_sync))
+        .route("/tx/{id}", get(get_transfer_by_id))
+        .route("/tx", get(list_transfers))
         .with_state(pool)
 }
 
-async fn health_check() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ok" })
+async fn health_check() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "status": "ok" }))
 }
 
-async fn get_last_block(State(pool): State<Arc<PgPool>>) -> Json<LastBlockResponse> {
+async fn get_last_block(State(pool): State<Arc<PgPool>>) -> Json<serde_json::Value> {
     let last_block = db::get_last_block_or_default(&pool).await.unwrap_or(0);
-    Json(LastBlockResponse { last_block })
+    Json(serde_json::json!({ "last_block": last_block }))
 }
 
-async fn update_sync(
+async fn get_transfer_by_id(
     State(pool): State<Arc<PgPool>>,
-    Json(payload): Json<UpdateSyncRequest>,
-) -> Json<HealthResponse> {
-    if db::update_sync_state(&pool, payload.last_block).await.is_ok() {
-        Json(HealthResponse { status: "updated" })
-    }
-    else {
-        Json(HealthResponse { status: "error" })
-    }
+    Path(id): Path<i64>,
+) -> Json<Option<UsdcTransfer>> {
+    let tx = db::get_transfer_by_id(&pool, id).await.unwrap_or(None);
+    Json(tx)
+}
+
+async fn list_transfers(
+    State(pool): State<Arc<PgPool>>,
+    Query(filter): Query<TransferFilter>,
+) -> Json<Vec<UsdcTransfer>> {
+    let txs = db::list_transfers(
+        &pool,
+        filter.from,
+        filter.to,
+        filter.created_before,
+        filter.created_after,
+        filter.page,
+        filter.limit,
+    )
+        .await
+        .unwrap_or_default();
+    Json(txs)
 }
