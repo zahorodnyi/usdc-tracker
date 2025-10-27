@@ -3,14 +3,14 @@ use anyhow::Result;
 use axum::serve;
 use tokio::{net::TcpListener, task};
 
-use config::AppConfig;
+use config;
 use db::init_pool;
 use api::create_router;
 use service::fetchers::take_and_push_transactions;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cfg = AppConfig::from_env();
+    let cfg = config::init().await?;
 
     let pool = init_pool_with_retry(&cfg.db_url).await?;
     let pool = Arc::new(pool);

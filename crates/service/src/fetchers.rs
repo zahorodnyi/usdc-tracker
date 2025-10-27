@@ -8,7 +8,7 @@ use ethers::types::U256;
 use ethers::utils::keccak256;
 use rust_decimal::Decimal;
 use tokio::time::{sleep, Duration};
-use db::{insert_transfer_if_not_exists, update_sync_state, get_last_block_or_default, PgPool};
+use db::{insert_transfer_if_not_exists, update_sync_state, get_last_block, PgPool};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 
@@ -55,7 +55,7 @@ pub async fn take_and_push_transactions(pool: Arc<PgPool>) -> anyhow::Result<()>
     let rpc_http = env::var("RPC_HTTP")?;
     let rpc_ws = env::var("RPC_WS")?;
     let usdc_address: Address = env::var("USDC_CONTRACT")?.parse()?;
-    let start_block = get_last_block_or_default(&pool).await?;
+    let start_block = get_last_block(&pool).await?;
 
 
     let provider_http = Provider::<Http>::try_from(rpc_http.clone())?;
@@ -182,7 +182,7 @@ async fn process_live_transactions(
     let can_update_clone = can_update_sync_state.clone();
 
     let _historical_handle = tokio::spawn(async move {
-        if let Ok(last_stored_block) = get_last_block_or_default(&pool_clone).await {
+        if let Ok(last_stored_block) = get_last_block(&pool_clone).await {
             if let Ok(current_block) = provider_http_clone.get_block_number().await {
                 let current_block = current_block.as_u64();
                 if current_block > last_stored_block {

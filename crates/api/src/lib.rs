@@ -32,7 +32,7 @@ async fn health_check() -> Json<serde_json::Value> {
 }
 
 async fn get_last_block(State(pool): State<Arc<PgPool>>) -> Json<serde_json::Value> {
-    let last_block = db::get_last_block_or_default(&pool).await.unwrap_or(0);
+    let last_block = db::get_last_block(&pool).await.unwrap_or(0);
     Json(serde_json::json!({ "last_block": last_block }))
 }
 

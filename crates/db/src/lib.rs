@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 pub use sqlx::{postgres::PgPoolOptions, PgPool, FromRow};
 use serde::Serialize;
-use sqlx::Row;
+
 
 
 pub async fn init_pool(database_url: &str) -> Result<PgPool> {
@@ -61,32 +61,12 @@ pub async fn update_sync_state(pool: &PgPool, last_block: u64) -> Result<()> {
     Ok(())
 }
 
-pub async fn get_last_block_or_default(pool: &PgPool) -> Result<u64> {
-    let start_block_env: u64 = std::env::var("START_BLOCK")
-        .unwrap_or_else(|_| "0".into())
-        .parse()
-        .unwrap_or(0);
-
-    let row = sqlx::query("SELECT last_block FROM sync_state WHERE id = 1")
+pub async fn get_last_block(pool: &PgPool) -> Result<u64> {
+    let val_opt: Option<i64> = sqlx::query_scalar(r#"SELECT last_block FROM sync_state WHERE id = 1"#,)
         .fetch_optional(pool)
         .await?;
 
-    if let Some(record) = row {
-        let db_block: i64 = record.get("last_block");
-        let db_block = db_block as u64;
-
-        if start_block_env > db_block {
-            update_sync_state(pool, start_block_env).await?;
-            Ok(start_block_env)
-        }
-        else {
-            Ok(db_block)
-        }
-    }
-    else {
-        update_sync_state(pool, start_block_env).await?;
-        Ok(start_block_env)
-    }
+    Ok(val_opt.map(|v| v as u64).unwrap_or(0))
 }
 
 #[derive(Serialize, FromRow, Debug)]

@@ -1,4 +1,6 @@
+use once_cell::sync::OnceCell;
 use serde::Deserialize;
+use anyhow::Result;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct AppConfig {
@@ -28,15 +30,24 @@ impl AppConfig {
                 .unwrap(),
         }
     }
+}
 
-    pub fn clone_for_task(&self) -> Self {
-        Self {
-            rpc_http: self.rpc_http.clone(),
-            rpc_ws: self.rpc_ws.clone(),
-            usdc_contract: self.usdc_contract.clone(),
-            start_block: self.start_block,
-            db_url: self.db_url.clone(),
-            server_port: self.server_port,
-        }
+static CONFIG: OnceCell<AppConfig> = OnceCell::new();
+
+pub async fn init() -> Result<&'static AppConfig> {
+    let _ = dotenv::dotenv();
+
+    let cfg = CONFIG.get_or_init(AppConfig::from_env);
+    let pool = db::init_pool(&cfg.db_url).await?;
+    let last = db::get_last_block(&pool).await?;
+
+    if cfg.start_block > last {
+        db::update_sync_state(&pool, cfg.start_block).await?;
     }
+
+    Ok(cfg)
+}
+
+pub fn get() -> &'static AppConfig {
+    CONFIG.get().expect("config::init() must be called first")
 }
