@@ -1,9 +1,10 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
-pub use sqlx::{postgres::PgPoolOptions, PgPool, FromRow};
+pub use sqlx::{postgres::PgPoolOptions, PgPool, FromRow, migrate::Migrator};
 use serde::Serialize;
 
+static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
 
 pub async fn init_pool(database_url: &str) -> Result<PgPool> {
@@ -11,6 +12,9 @@ pub async fn init_pool(database_url: &str) -> Result<PgPool> {
         .max_connections(5)
         .connect(database_url)
         .await?;
+
+    MIGRATOR.run(&pool).await?;
+
     Ok(pool)
 }
 
@@ -58,6 +62,14 @@ pub async fn update_sync_state(pool: &PgPool, last_block: u64) -> Result<()> {
         .execute(pool)
         .await?;
 
+    Ok(())
+}
+
+pub async fn update_sync_state_if_needs(pool: &PgPool, start_block: u64) -> Result<()> {
+    let last_block = get_last_block(&pool).await?;
+    if start_block > last_block {
+        update_sync_state(pool, start_block).await?;
+    }
     Ok(())
 }
 

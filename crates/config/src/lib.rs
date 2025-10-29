@@ -35,17 +35,8 @@ impl AppConfig {
 static CONFIG: OnceCell<AppConfig> = OnceCell::new();
 
 pub async fn init() -> Result<&'static AppConfig> {
-    let _ = dotenv::dotenv();
-
-    let cfg = CONFIG.get_or_init(AppConfig::from_env);
-    let pool = db::init_pool(&cfg.db_url).await?;
-    let last = db::get_last_block(&pool).await?;
-
-    if cfg.start_block > last {
-        db::update_sync_state(&pool, cfg.start_block).await?;
-    }
-
-    Ok(cfg)
+    dotenv::dotenv().ok();
+    Ok(CONFIG.get_or_init(AppConfig::from_env))
 }
 
 pub fn get() -> &'static AppConfig {

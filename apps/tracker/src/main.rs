@@ -12,7 +12,7 @@ use service::fetchers::take_and_push_transactions;
 async fn main() -> Result<()> {
     let cfg = config::init().await?;
 
-    let pool = init_pool_with_retry(&cfg.db_url).await?;
+    let pool = init_pool_with_retry(&cfg.db_url, cfg.start_block).await?;
     let pool = Arc::new(pool);
 
     let tracker_task = {
@@ -35,14 +35,19 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn init_pool_with_retry(db_url: &str) -> Result<sqlx::PgPool> {
+async fn init_pool_with_retry(db_url: &str, start_block: u64) -> Result<sqlx::PgPool> {
     use tokio::time::{sleep, Duration};
-    loop {
-        match init_pool(db_url).await {
-            Ok(pool) => return Ok(pool),
-            Err(_) => {
-                sleep(Duration::from_secs(2)).await;
-            }
+
+    const MAX_RETRIES: usize = 10;
+    let mut attempts = 0;
+
+    while attempts < MAX_RETRIES {
+        if let Ok(pool) = init_pool(db_url).await {
+            db::update_sync_state_if_needs(&pool, start_block).await?;
+            return Ok(pool);
         }
+        attempts += 1;
+        sleep(Duration::from_secs(2)).await;
     }
+    Err(anyhow::Error::msg("database connection failed"))
 }
