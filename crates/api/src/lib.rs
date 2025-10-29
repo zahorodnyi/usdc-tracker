@@ -6,7 +6,7 @@ use axum::{
 use serde::Deserialize;
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
-use db::{self, PgPool, UsdcTransfer};
+use db::{PgPool, UsdcTransfer, PostgresRepo, ReadData};
 
 #[derive(Deserialize)]
 struct TransferFilter {
@@ -32,7 +32,8 @@ async fn health_check() -> Json<serde_json::Value> {
 }
 
 async fn get_last_block(State(pool): State<Arc<PgPool>>) -> Json<serde_json::Value> {
-    let last_block = db::get_last_block(&pool).await.unwrap_or(0);
+    let repo = PostgresRepo::new(pool.as_ref().clone());
+    let last_block = repo.get_last_block().await.unwrap_or(0);
     Json(serde_json::json!({ "last_block": last_block }))
 }
 
@@ -40,7 +41,8 @@ async fn get_transfer_by_id(
     State(pool): State<Arc<PgPool>>,
     Path(id): Path<i64>,
 ) -> Json<Option<UsdcTransfer>> {
-    let tx = db::get_transfer_by_id(&pool, id).await.unwrap_or(None);
+    let repo = PostgresRepo::new(pool.as_ref().clone());
+    let tx = repo.get_transfer_by_id(id).await.unwrap_or(None);
     Json(tx)
 }
 
@@ -48,15 +50,16 @@ async fn list_transfers(
     State(pool): State<Arc<PgPool>>,
     Query(filter): Query<TransferFilter>,
 ) -> Json<Vec<UsdcTransfer>> {
-    let txs = db::list_transfers(
-        &pool,
-        filter.from,
-        filter.to,
-        filter.created_before,
-        filter.created_after,
-        filter.page,
-        filter.limit,
-    )
+    let repo = PostgresRepo::new(pool.as_ref().clone());
+    let txs = repo
+        .list_transfers(
+            filter.from,
+            filter.to,
+            filter.created_before,
+            filter.created_after,
+            filter.page,
+            filter.limit,
+        )
         .await
         .unwrap_or_default();
     Json(txs)

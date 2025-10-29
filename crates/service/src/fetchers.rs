@@ -8,7 +8,7 @@ use ethers::types::U256;
 use ethers::utils::keccak256;
 use rust_decimal::Decimal;
 use tokio::time::{sleep, Duration};
-use db::{insert_transfer_if_not_exists, update_sync_state, get_last_block, PgPool};
+use db::{PostgresRepo, ReadData, WriteData, PgPool};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 
@@ -52,10 +52,12 @@ impl BatchSizer {
 pub async fn take_and_push_transactions(pool: Arc<PgPool>) -> anyhow::Result<()> {
     dotenv().ok();
 
+    let repo = PostgresRepo::new(pool.as_ref().clone());
+
     let rpc_http = env::var("RPC_HTTP")?;
     let rpc_ws = env::var("RPC_WS")?;
     let usdc_address: Address = env::var("USDC_CONTRACT")?.parse()?;
-    let start_block = get_last_block(&pool).await?;
+    let start_block = repo.get_last_block().await?;
 
 
     let provider_http = Provider::<Http>::try_from(rpc_http.clone())?;
@@ -80,7 +82,8 @@ async fn process_historical_transactions(
     pool: &sqlx::PgPool,
 ) -> anyhow::Result<u64> {
     let latest_block = provider_http.get_block_number().await?.as_u64();
-    
+    let repo = PostgresRepo::new(pool.clone());
+
 
     let mut current = start_block;
     let mut batch = BatchSizer::new(LOGS_BATCH_SIZE);
@@ -114,8 +117,7 @@ async fn process_historical_transactions(
 
                             if let Some(datetime) = last_block_time {
                                 if let (Some(tx_hash), Some(li)) = (log.transaction_hash, log.log_index) {
-                                    insert_transfer_if_not_exists(
-                                        pool,
+                                    repo.insert_transfer_if_not_exists(
                                         &format!("{:?}", tx_hash),
                                         li.as_u64(),
                                         log.block_number.unwrap().as_u64(),
@@ -129,7 +131,7 @@ async fn process_historical_transactions(
                         }
                     }
 
-                    update_sync_state(pool, end).await?;
+                    repo.update_sync_state(end).await?;
                     current = end + 1;
                     batch.reset();
                     sleep(Duration::from_millis(HISTORICAL_SLEEP_MS)).await;
@@ -165,6 +167,7 @@ async fn process_live_transactions(
     transfer_topic: H256,
     pool: &sqlx::PgPool,
 ) -> anyhow::Result<()> {
+    let repo = PostgresRepo::new(pool.clone());
 
     let filter_live = Filter::new()
         .address(usdc_address)
@@ -182,7 +185,8 @@ async fn process_live_transactions(
     let can_update_clone = can_update_sync_state.clone();
 
     let _historical_handle = tokio::spawn(async move {
-        if let Ok(last_stored_block) = get_last_block(&pool_clone).await {
+        let repo_clone = PostgresRepo::new(pool_clone.clone());
+        if let Ok(last_stored_block) = repo_clone.get_last_block().await {
             if let Ok(current_block) = provider_http_clone.get_block_number().await {
                 let current_block = current_block.as_u64();
                 if current_block > last_stored_block {
@@ -217,8 +221,7 @@ async fn process_live_transactions(
             }
             if let (Some(_block_number), Some(datetime)) = (log.block_number, last_block_time) {
                 if let (Some(tx_hash), Some(li)) = (log.transaction_hash, log.log_index) {
-                    insert_transfer_if_not_exists(
-                        pool,
+                    repo.insert_transfer_if_not_exists(
                         &format!("{:?}", tx_hash),
                         li.as_u64(),
                         log.block_number.unwrap().as_u64(),
@@ -229,7 +232,7 @@ async fn process_live_transactions(
                     ).await?;
 
                     if can_update_sync_state.load(Ordering::SeqCst) {
-                        update_sync_state(pool, log.block_number.unwrap().as_u64()).await?;
+                        repo.update_sync_state(log.block_number.unwrap().as_u64()).await?;
                     }
                 }
             }

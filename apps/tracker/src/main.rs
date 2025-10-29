@@ -4,7 +4,7 @@ use axum::serve;
 use tokio::{net::TcpListener, task};
 
 use config;
-use db::init_pool;
+use db::{init_pool, PostgresRepo, WriteData};
 use api::create_router;
 use service::fetchers::take_and_push_transactions;
 
@@ -43,7 +43,8 @@ async fn init_pool_with_retry(db_url: &str, start_block: u64) -> Result<sqlx::Pg
 
     while attempts < MAX_RETRIES {
         if let Ok(pool) = init_pool(db_url).await {
-            db::update_sync_state_if_needs(&pool, start_block).await?;
+            let repo = PostgresRepo::new(pool.clone());
+            repo.update_sync_state_if_needs(start_block).await?;
             return Ok(pool);
         }
         attempts += 1;
